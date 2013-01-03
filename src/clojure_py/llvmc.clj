@@ -246,6 +246,10 @@
   (LLVMInitializeX86Target)
   (LLVMInitializeX86TargetMC))
 
+(defn map-parr [fn coll]
+  (into-array Pointer
+              (map fn coll)))
+
 (def kw->linkage
   {:extern LLVMExternalLinkage})
 
@@ -363,6 +367,18 @@
 
 
 (defmulti -llvm-type-kw identity)
+
+(defmethod -llvm-type-kw :default
+  [kw]
+  (if (= (last (name kw)) \*)
+    (LLVMPointerType (->> (butlast (name kw))
+                          (apply str)
+                          keyword
+                          llvm-type)
+                     0)
+    (assert false (str "Unknown type " kw))))
+
+
 (defmethod -llvm-type-kw :int
   [kw]
   (LLVMIntType 32))
@@ -452,8 +468,11 @@
       (LLVMSetLinkage gbl (kw->linkage linkage)))
     gbl))
 
+(defn op [o]
+  (println (:op o))
+  (:op o))
 
-(defmulti compile :op)
+(defmulti compile op)
 
 (defmethod compile :const
   [{:keys [value type]}]
@@ -466,13 +485,26 @@
     (println "========== init ==========" name type)
     (LLVMSetInitializer val (encode-const (llvm-type type) value))))
 
+(defmethod compile :aget
+  [{:keys [idx ptr]}]
+  (assert (and idx ptr))
+  (println "gep" (count idx) idx (map-parr compile idx))
+  (let [gep (LLVMBuildGEP *builder*
+                          (compile ptr)
+                          (map-parr compile idx)
+                          (count idx)
+                          (name (gensym "aget_")))]
+    (println "g")
+    (LLVMBuildLoad *builder* gep "load_")))
+
 (defmethod compile :call
   [{:keys [fn args]}]
-  (let [fnc (LLVMGetNamedFunction *module* fn)]
+  (let [fn (if (map? fn) (name (:name fn)))
+        fnc (LLVMGetNamedFunction *module* fn)]
+    (assert fnc (str "Couldn't find function " fn))
     (LLVMBuildCall *builder*
                    fnc
-                   (into-array Pointer
-                               (map compile args))
+                   (map-parr compile args)
                    (count args)
                    (genname "call_"))))
 
@@ -492,6 +524,10 @@
                     (compile value)
                     (llvm-type type)
                     (name (gensym "bitcast_"))))
+
+(defmethod compile :arg
+  [{:keys [idx]}]
+  (LLVMGetParam *fn* idx))
 
 (defmethod compile :fn
   [{:keys [type args name body]}]
@@ -523,7 +559,6 @@
         (compile x))
       (LLVMVerifyModule module LLVMAbortProcessAction error)
       (LLVMDumpModule module)
-      (LLVMWriteBitcodeToFile module "foo.bc")
       (LLVMDisposeMessage (value-at error))
       module)))
 
@@ -541,7 +576,8 @@
 (defn write-object-file [module march] 
   (let [file (dump-module-to-temp-file module)
         ofile (temp-file "o_dump" ".o")
-        cmds ["llc" "-filetype=obj" "--march" march "-o" ofile file]
+        cmds ["llc" "-filetype=obj" "-o" ofile file]
+        cmds (if march (concat cmds ["--march" march]) cmds)
         {:keys [out err exit] :as mp} (apply shell/sh cmds)]
     (println cmds)
     (assert (= exit 0) err)
@@ -567,6 +603,24 @@
     (assert (= 0 (:exit res)) res)
     (:out res)))
 
+(defn link-exe [obj out]
+  (let [cmds (concat ["gcc" obj "-o" out "-lc"])
+        _ (println cmds)
+        res (apply shell/sh cmds)]
+    (assert (= 0 (:exit res)) res)
+    (:out res)))
+
+(defn compile-as-exe [ast]
+  (let [mod (compile {:op :module
+                      :name (name (gensym "module_"))
+                      :body ast})
+        ofile (write-object-file mod "x86-64")
+        exe-file (temp-file "exe_gen" "out")
+        out (link-exe ofile exe-file)]
+    exe-file))
+
+(defn run-exe [file & args]
+     (apply shell/sh file args))
 
 
 ;;;;; TargetMachine Code ;;;;
