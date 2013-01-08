@@ -16,7 +16,7 @@
 (deftest basic-integers
   (is (= (-> (c-module '[clojure-py.system.integer
                          clojure-py.object]
-              (c-fn "-main" main-fn-t [argc argv]
+              (c-fn "main" main-fn-t [argc argv]
                     (c-call i/unwrap-int (c-call i/from-int (const-int 42)))))
              (dbg)
              (llvmc/compile-as-exe)

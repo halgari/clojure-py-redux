@@ -11,11 +11,11 @@
    obj/standard-obj-free])
 
 (defc-fn from-int [:int num -> obj/object*]
-  (-> (c-new Winteger-t Winteger-type-t (const-int 1) num)
+  (-> (c-new Winteger-t (c-bitcast Winteger-type-t obj/type*) (const-int 1) num)
       (c-bitcast obj/object*)))
 
 (defc-fn unwrap-int [obj/object* i
                      -> :int]
   (c-let [val (c-get i Winteger-t :value)]
-         (obj/dec-ref i)
+         (c-call obj/dec-ref (c-bitcast i obj/object*))
          val))

@@ -49,7 +49,7 @@
    :else else})
 
 (defn c-is [a b]
-  {:op :eq
+  {:op :is
    :a a
    :b b})
 
@@ -100,7 +100,7 @@
               {:op :do
                :body ~(vec body)})}))
 
-(defmacro c-local [name]
+#_(defmacro c-local [name]
   `{:op :local
    :name ~(clojure.core/name name)})
 
@@ -166,7 +166,7 @@
                    ~(mapv second args)
                    ~@body)]
        (register-global nsname# ~(clojure.core/name name) f#)
-       (def ~name {:op :global
+       (def ~name {:op :get-global
                    :name (:name f#)}))))
 
 (defn c-free [local]
@@ -175,11 +175,12 @@
 
 (defn c-bitcast [ptr tp]
   {:op :bitcast
-   :pointer ptr
+   :value ptr
    :type tp})
 
 (defn c-new [tp & inits]
   {:op :new
+   :type tp
    :members (vec inits)})
 
 (defn c-gbl [name tp data]

@@ -115,6 +115,7 @@
 (defnative Pointer LLVMBuildBr)
 (defnative Pointer LLVMBuildCall)
 (defnative Pointer LLVMBuildAlloca)
+(defnative Pointer LLVMBuildFree)
 (defnative Pointer LLVMBuildLoad)
 (defnative Pointer LLVMBuildStore)
 
@@ -157,6 +158,7 @@
 (defnative Pointer LLVMBuildStructGEP)
 (defnative Pointer LLVMBuildAdd)
 (defnative Pointer LLVMBuildSub)
+(defnative Pointer LLVMBuildMalloc)
 
 (def ^:dynamic *module* (LLVMModuleCreateWithName "tmp"))
 (def ^:dynamic *fn*)
@@ -314,7 +316,7 @@
 (defmethod encode-const :LLVMPointerTypeKind
   [tp v]
   (cond
-   (map? v) (LLVMGetNamedFunction *module* (:global v))
+   (map? v) (LLVMGetNamedFunction *module* (:name v))
    (string? v) (const-string-array v) #_(LLVMConstString v (count v) false)
    (instance? Pointer v) v
    (nil? v) (LLVMConstPointerNull tp)
@@ -478,6 +480,7 @@
 
 (defmethod stub-global :fn
   [{:keys [name type linkage]}]
+  (println "stub" name)
   (let [tp (llvm-type type)
         gbl (LLVMAddFunction *module* name tp)]
     (when linkage
@@ -497,6 +500,7 @@
 
 (defmethod compile :global
   [{:keys [type value name]}]
+  {:pre [type value name]}
   (let [val (LLVMGetNamedGlobal *module* name)]
     (println "========== init ==========" name type)
     (LLVMSetInitializer val (encode-const (llvm-type type) value))))
@@ -515,8 +519,7 @@
 
 (defmethod compile :call
   [{:keys [fn args]}]
-  (let [fn (if (map? fn) (name (:name fn)))
-        fnc (LLVMGetNamedFunction *module* fn)]
+  (let [fnc (compile fn)]
     (assert fnc (str "Couldn't find function " fn))
     (LLVMBuildCall *builder*
                    fnc
@@ -533,8 +536,19 @@
 
 (defmethod compile :let
   [{:keys [local binding body]}]
-  (binding [*locals* (assoc *locals* local (compile binding))]
+  (clojure.core/binding [*locals* (assoc *locals* local (compile binding))]
     (compile body)))
+
+(defmethod compile :new
+  [{:keys [type members]}]
+  (let [malloc (LLVMBuildMalloc *builder* (llvm-type type) (name (gensym "new_")))]
+    (doseq [idx (range (count members))]
+      (let [gep (LLVMBuildStructGEP *builder*
+                                    malloc
+                                    idx
+                                    (name (gensym "gep_")))]
+        (LLVMBuildStore *builder* (compile (nth members idx)) gep)))
+    malloc))
 
 (defmethod compile :get
   [{:keys [ptr member type]}]
@@ -570,6 +584,30 @@
                 (compile b)
                 (name (gensym "isub_"))))
 
+(defmethod compile :if
+  [{:keys [test then else]}]
+  (let [thenblk (LLVMAppendBasicBlock *fn* (name (gensym "then_")))
+        elseblk (LLVMAppendBasicBlock *fn* (name (gensym "else_")))
+        endblk (LLVMAppendBasicBlock *fn* (name (gensym "end_")))
+        cmpval (compile test)
+        _ (LLVMPositionBuilderAtEnd *builder* thenblk)
+        thenval (binding [*block* thenblk]
+                  (compile then))
+        _ (LLVMPositionBuilderAtEnd *builder* elseblk)
+        elseval (binding [*block* elseblk]
+                  (compile else))
+        _ (LLVMPositionBuilderAtEnd *builder* *block*)
+        tmp (LLVMBuildAlloca *builder* (LLVMTypeOf thenval) "alloca_")]
+    (LLVMBuildCondBr *builder* cmpval thenblk elseblk)
+    (LLVMPositionBuilderAtEnd *builder* thenblk)
+    (LLVMBuildStore *builder* thenval tmp)
+    (LLVMBuildBr *builder* endblk)
+    (LLVMPositionBuilderAtEnd *builder* elseblk)
+    (LLVMBuildStore *builder* elseval tmp)
+    (LLVMBuildBr *builder* endblk)
+    (LLVMPositionBuilderAtEnd *builder* endblk)
+    (LLVMBuildLoad *builder* tmp (name (gensym "ifval_")))))
+
 (defmethod compile :iadd
   [{:keys [a b]}]
   (LLVMBuildAdd *builder*
@@ -577,19 +615,41 @@
                 (compile b)
                 (name (gensym "iadd_"))))
 
-
+(defmethod compile :free
+  [{:keys [pointer]}]
+  (LLVMBuildFree *builder* (compile pointer))
+  (compile {:op :const :type :int :value 0}))
 
 
 (defmethod compile :get-global
   [{:keys [name]}]
-  (LLVMGetNamedGlobal *module* name))
+  {:pre [name]}
+  (println name)
+  (or
+   (LLVMGetNamedGlobal *module* name)
+   (LLVMGetNamedFunction *module* name)))
+
+(defmethod compile :local
+  [{:keys [name]}]
+  {:post [%]}
+  (println *locals*, name)
+  (*locals* name))
 
 (defmethod compile :bitcast
   [{:keys [type value]}]
+  {:pre [type value]}
   (LLVMBuildBitCast *builder*
                     (compile value)
                     (llvm-type type)
                     (name (gensym "bitcast_"))))
+
+(defmethod compile :is
+  [{:keys [a b]}]
+  (LLVMBuildICmp *builder*
+                 LLVMIntEQ
+                 (compile a)
+                 (compile b)
+                 (name (gensym "is_"))))
 
 (defmethod compile :arg
   [{:keys [idx]}]
@@ -649,6 +709,7 @@
         cmds ["llc" "-filetype=obj" "-o" ofile file]
         cmds (if march (concat cmds ["--march" march]) cmds)
         {:keys [out err exit] :as mp} (apply shell/sh cmds)]
+    (apply shell/sh ["llc" "-filetype=asm" "-o" "foo.s" file])
     (println cmds)
     (assert (= exit 0) err)
     
