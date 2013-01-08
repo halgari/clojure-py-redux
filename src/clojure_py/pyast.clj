@@ -1,5 +1,5 @@
 (ns clojure-py.pyast
-  (:require #_[clojure-python.core :as cljpy]
+  #_(:require #_[clojure-python.core :as cljpy]
             [clojure.data.json :as json])
   #_(:import [org.python.core PyObject PyList Py])
   (:require [clojure.java.shell :as sh]))
@@ -40,22 +40,22 @@
 
   (defn dump [a]
     (println a " --> " ((ast-node "dump") a))
-    a))
+    a)
 
-(defn assemble [s]
-  (let [{:keys [out err]} (sh/sh "python3" "src/clojure_py/assembler.py" :in s
-                                 :out "UTF-8"
-                                 )]
-    (println "Errors: " err)
-    out))
+  (defn assemble [s]
+    (let [{:keys [out err]} (sh/sh "python3" "src/clojure_py/assembler.py" :in s
+                                   :out "UTF-8"
+                                   )]
+      (println "Errors: " err)
+      out))
 
 
-(defn compile [form]
-  (let [r (assemble (json/write-str form))]
-   (println r)
-  (json/read-str r)))
+  (defn compile [form]
+    (let [r (assemble (json/write-str form))]
+      (println r)
+      (json/read-str r)))
 
-(defn run [form]
-  (let [compiled (compile form)]
-    (println compiled "<-- ")
-    3))
+  (defn run [form]
+    (let [compiled (compile form)]
+      (println compiled "<-- ")
+      3)))

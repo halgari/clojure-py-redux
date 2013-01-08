@@ -154,7 +154,9 @@
 (defnative Pointer LLVMPointerType)
 (defnative Integer LLVMSetLinkage)
 (defnative Integer LLVMGetIntTypeWidth)
-
+(defnative Pointer LLVMBuildStructGEP)
+(defnative Pointer LLVMBuildAdd)
+(defnative Pointer LLVMBuildSub)
 
 (def ^:dynamic *module* (LLVMModuleCreateWithName "tmp"))
 (def ^:dynamic *fn*)
@@ -398,11 +400,25 @@
     :etype :i8}))
 
 
+(defn flatten-struct [tp attr]
+  (->> (take-while (complement nil?)
+                   (iterate :extends tp))
+       reverse
+       (mapcat attr)))
+
+(defn seq-idx [col itm]
+  {:post [%]}
+  (-> (zipmap col
+              (range))
+      (get itm)))
+
 (defmulti -llvm-type-assoc :type)
 (defmethod -llvm-type-assoc :struct
-  [{:keys [members packed]}]
+  [{:keys [members packed] :as struct}]
   (assert members)
-  (let [ele (into-array Pointer (map llvm-type members))
+  (let [ele (into-array Pointer
+                        (map llvm-type
+                             (flatten-struct struct :members)))
         packed (or packed false)]
     (LLVMStructType ele (count ele) packed)))
 
@@ -510,9 +526,59 @@
 
 (defmethod compile :do
   [{:keys [body]}]
+  {:pre [(seq? (seq body))]}
   (doseq [x (butlast body)]
     (compile x))
   (compile (last body)))
+
+(defmethod compile :let
+  [{:keys [local binding body]}]
+  (binding [*locals* (assoc *locals* local (compile binding))]
+    (compile body)))
+
+(defmethod compile :get
+  [{:keys [ptr member type]}]
+  (let [idx (seq-idx (flatten-struct type :names) member)
+        _ (assert idx)
+        cptr (compile {:op :bitcast
+                       :value ptr
+                       :type {:type :*
+                              :etype type}})
+        _ (println type idx)
+        gep (LLVMBuildStructGEP *builder*
+                                cptr
+                            idx
+                            (name (gensym "get_")))]
+    (LLVMBuildLoad *builder* gep "load_")))
+
+(defmethod compile :set
+  [{:keys [ptr member type value]}]
+  (let [idx (seq-idx (flatten-struct type :names) member)
+        ptr (compile {:op :bitcast
+                      :value ptr
+                      :type {:type :*
+                             :etype type}})
+        gep (LLVMBuildStructGEP *builder* ptr idx (name (gensym "set_")))]
+    (LLVMBuildStore *builder* (compile value) gep)
+    ptr))
+
+
+(defmethod compile :isub
+  [{:keys [a b]}]
+  (LLVMBuildSub *builder*
+                (compile a)
+                (compile b)
+                (name (gensym "isub_"))))
+
+(defmethod compile :iadd
+  [{:keys [a b]}]
+  (LLVMBuildAdd *builder*
+                (compile a)
+                (compile b)
+                (name (gensym "iadd_"))))
+
+
+
 
 (defmethod compile :get-global
   [{:keys [name]}]
@@ -534,10 +600,10 @@
   (when body
     (let [fnc (LLVMGetNamedFunction *module* name)
           pcnt (LLVMCountParams fnc)
-          newargs (map (fn [s idx]
-                         [s (LLVMGetParam fnc idx )])
-                       args
-                       (range pcnt))]
+          newargs (into {} (map (fn [s idx]
+                                  [s (LLVMGetParam fnc idx )])
+                                args
+                                (range pcnt)))]
       (LLVMSetFunctionCallConv fnc LLVMCCallConv)
       (binding [*fn* fnc
                 *locals* newargs
@@ -561,6 +627,10 @@
       (LLVMDumpModule module)
       (LLVMDisposeMessage (value-at error))
       module)))
+
+(defmethod compile :default
+  [ast]
+  (assert false (str "Can't compile" ast)))
 
 (defn temp-file [prefix ext]
   (let [file (java.io.File/createTempFile prefix ext)]
@@ -610,10 +680,10 @@
     (assert (= 0 (:exit res)) res)
     (:out res)))
 
+
+
 (defn compile-as-exe [ast]
-  (let [mod (compile {:op :module
-                      :name (name (gensym "module_"))
-                      :body ast})
+  (let [mod (compile ast)
         ofile (write-object-file mod "x86-64")
         exe-file (temp-file "exe_gen" "out")
         out (link-exe ofile exe-file)]

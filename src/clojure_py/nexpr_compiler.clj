@@ -1,6 +1,7 @@
 (ns clojure-py.nexpr-compiler)
 
 (def ^:dynamic *locals*)
+(def ^:dynamic *globals*)
 
 (defn type->kw [form]
   (cond (symbol? form) :symbol
@@ -9,6 +10,10 @@
 
 (defmulti analyze-item type->kw)
 (defmulti analyze-sexp #(first %))
+
+(defmethod analyze-item :default
+  [f]
+  (assert false (str "Can't analyze: " f)))
 
 (defmethod analyze-item :symbol
   [sym]
@@ -34,11 +39,28 @@
    :type :int
    :value itm})
 
+(defmethod analyze-sexp 'deftype
+  [[_ nm v]]
+  (swap! *globals* assoc nm v))
+
 (defmethod analyze-sexp 'float
   [[_ expr]]
   {:op :cast
    :type :float
    :body expr})
+
+(defmethod analyze-sexp 'let
+  [[_ binds & body]]
+  (let [[nm b & more] binds]
+    {:op :let
+     :name nm
+     :value (analyze-item b)
+     :body (binding [*locals* (assoc *locals*
+                                nm {:op :local :name nm})]
+             (if more
+               (analyze-item (list* 'let (vec more) body))
+               {:op :do
+                :body (mapv analyze-item body)}))}))
 
 (defmethod analyze-sexp 'fdiv
   [[_ & ops]]
@@ -148,7 +170,8 @@
                                           (map (fn [idx]
                                                  {:op :arg
                                                   :idx idx})
-                                               (range)))]
+                                               (range)))
+                                  *globals* (atom {})]
                                (mapv analyze-item
                                      body))})
      :linkage (when (:extern (meta nm)) :external)}))
