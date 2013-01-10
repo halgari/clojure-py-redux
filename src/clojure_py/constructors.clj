@@ -10,9 +10,21 @@
      :members (mapv first members)
      :names (mapv second members)}))
 
+(defn make-accessor [type sym]
+  (let [t (gensym)]
+    `(defn ~(symbol (str "-" (name sym))) ~(vector t)
+       (c-get ~t ~type ~sym))))
+
+(defn d [x]
+  (println x)
+  x)
+
 (defmacro defc-struct [name & options]
   (let [opts (apply hash-map options)]
-    `(def ~name (c-struct ~(clojure.core/name name) ~opts))))
+    (d `(do
+         (def ~name (c-struct ~(clojure.core/name name) ~opts))
+         ~@(map (comp (partial make-accessor name) second)
+                (partition 2 (:members opts)))))))
 
 
 #_(defn c-fn
@@ -66,12 +78,42 @@
    :member member
    :type tp})
 
+(defn c-aget [ptr idx]
+  {:op :aget
+   :ptr ptr
+   :idx idx})
+
 (defn c-idec [val]
   {:op :isub
    :a val
    :b {:op :const
        :type :int
        :value 1}})
+
+(defn c-iadd
+  ([a b]
+     {:op :iadd
+      :a a
+      :b b})
+  ([a b & more]
+     (reduce c-iadd
+             (c-iadd a b)
+             more)))
+
+(defn c-shl [a bits]
+  {:op :shl
+   :a a
+   :bits bits})
+
+(defn c-shr [a bits]
+  {:op :shr
+   :a a
+   :bits bits})
+
+(defn c-and [a b]
+  {:op :and
+   :a a
+   :b b})
 
 (defn c-iinc [val]
   {:op :iadd
@@ -90,15 +132,19 @@
    :type :int
    :value value})
 
-(defmacro c-let [[local binding] & body]
-  (let [s (name (gensym "let_"))]
-    `{:op :let
-      :local ~s
-      :binding ~binding
-      :body (let [~local {:op :local
-                          :name ~s}]
-              {:op :do
-               :body ~(vec body)})}))
+(defmacro c-let [bindings & body]
+  (reduce (fn [a [local binding]]
+            (let [s (name (gensym "let_"))]
+              `{:op :let
+                :local ~s
+                :binding ~binding
+                :body (let [~local {:op :local
+                                    :name ~s}]
+                        {:op :do
+                         :body ~a})}))
+          `{:op :do
+            :body ~(vec body)}
+          (reverse (partition 2 bindings))))
 
 #_(defmacro c-local [name]
   `{:op :local
@@ -119,7 +165,7 @@
   {:type :*
    :etype tp})
 
-(defn nptr [tp]
+(defn c-nptr [tp]
   {:op :const
    :type tp
    :value nil})
@@ -146,11 +192,21 @@
                              (range)))
             (c-do ~@body))})
 
+(defmacro defextern [name args ret]
+  `(do (register-global (.getName ~'*ns*)
+                        ~(clojure.core/name name)
+                        {:op :fn
+                         :linkage :external
+                         :type {:type :fn
+                                :args ~args
+                                :ret ~ret}
+                         :name ~(clojure.core/name name)})
+       (def ~name {:op :get-global :name ~name})))
+
 (def registered-globals (atom {}))
 
 (defn register-global [ns nm gbl]
   (swap! registered-globals assoc-in [ns nm] gbl))
-
 
 (defmacro defc-fn [name args & body]
   (let [args (partition 2 args)
@@ -166,8 +222,12 @@
                    ~(mapv second args)
                    ~@body)]
        (register-global nsname# ~(clojure.core/name name) f#)
-       (def ~name {:op :get-global
-                   :name (:name f#)}))))
+       (defn ~name
+         [& args#]
+         {:op :call
+          :fn {:op :get-global
+               :name (:name f#)}
+          :args (vec args#)}))))
 
 (defn c-free [local]
   {:op :free

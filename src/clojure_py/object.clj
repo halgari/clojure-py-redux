@@ -2,6 +2,9 @@
   (:refer-clojure :exclude [defstruct])
   (:use [clojure-py.constructors]))
 
+
+(defextern calloc [:int :int] :i8*)
+
 (def dealloc-fn-t
   {:type :fn
    :args [:i8*]

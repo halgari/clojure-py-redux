@@ -152,6 +152,7 @@
 (defnative Pointer LLVMGetNamedGlobal)
 (defnative Pointer LLVMGetNamedFunction)
 (defnative Pointer LLVMInt8Type)
+(defnative Pointer LLVMInt1Type)
 (defnative Pointer LLVMPointerType)
 (defnative Integer LLVMSetLinkage)
 (defnative Integer LLVMGetIntTypeWidth)
@@ -394,6 +395,14 @@
 (defmethod -llvm-type-kw :i8
   [kw]
   (LLVMInt8Type))
+
+(defmethod -llvm-type-kw :i1
+  [kw]
+  (LLVMInt1Type))
+
+(defmethod -llvm-type-kw :bool
+  [kw]
+  (LLVMInt1Type))
 
 (defmethod -llvm-type-kw :i8*
   [kw]
